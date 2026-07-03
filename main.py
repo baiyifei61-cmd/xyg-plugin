@@ -38,13 +38,21 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS game_state (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id TEXT,
             level_id INTEGER,
             answers TEXT,
             start_time INTEGER,
             time_limit INTEGER,
-            is_active INTEGER DEFAULT 1
+            is_active INTEGER DEFAULT 1,
+            participants TEXT DEFAULT '[]'
         )
     """)
+    cursor.execute("PRAGMA table_info(game_state)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if 'group_id' not in columns:
+        cursor.execute("ALTER TABLE game_state ADD COLUMN group_id TEXT")
+    if 'participants' not in columns:
+        cursor.execute("ALTER TABLE game_state ADD COLUMN participants TEXT DEFAULT '[]'")
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS scores (
             user_openid TEXT PRIMARY KEY,
@@ -52,6 +60,11 @@ def init_db():
             updated_at INTEGER
         )
     """)
+    cursor.execute("PRAGMA table_info(scores)")
+    score_columns = [row[1] for row in cursor.fetchall()]
+    for col in ('rob_count', 'robbed_count', 'fail_count'):
+        if col not in score_columns:
+            cursor.execute(f"ALTER TABLE scores ADD COLUMN {col} INTEGER DEFAULT 0")
     conn.commit()
     conn.close()
 
@@ -71,13 +84,16 @@ def get_random_level():
         print(f"获取题目失败: {e}")
         return None
 
-def get_active_game():
-    """获取当前活跃的游戏"""
+def get_active_game(group_id):
+    """获取当前群的活跃游戏"""
     try:
         conn = sqlite3.connect(GAME_DB)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM game_state WHERE is_active = 1 ORDER BY id DESC LIMIT 1")
+        cursor.execute(
+            "SELECT * FROM game_state WHERE is_active = 1 AND group_id = ? ORDER BY id DESC LIMIT 1",
+            (group_id,)
+        )
         row = cursor.fetchone()
         conn.close()
         if row:
@@ -86,28 +102,28 @@ def get_active_game():
     except:
         return None
 
-def save_game_state(level, answers):
-    """保存游戏状态"""
+def save_game_state(group_id, level, answers):
+    """保存游戏状态（按群独立）"""
     try:
         conn = sqlite3.connect(GAME_DB)
         cursor = conn.cursor()
-        cursor.execute("UPDATE game_state SET is_active = 0")
+        cursor.execute("UPDATE game_state SET is_active = 0 WHERE group_id = ?", (group_id,))
         answers_json = json.dumps(answers, ensure_ascii=False)
         cursor.execute(
-            "INSERT INTO game_state (level_id, answers, start_time, time_limit, is_active) VALUES (?, ?, ?, ?, 1)",
-            (level['id'], answers_json, int(time.time()), 100)
+            "INSERT INTO game_state (group_id, level_id, answers, start_time, time_limit, is_active) VALUES (?, ?, ?, ?, ?, 1)",
+            (group_id, level['id'], answers_json, int(time.time()), 100)
         )
         conn.commit()
         conn.close()
     except Exception as e:
         print(f"保存游戏失败: {e}")
 
-def close_game():
-    """关闭当前游戏"""
+def close_game(group_id):
+    """关闭当前群的游戏"""
     try:
         conn = sqlite3.connect(GAME_DB)
         cursor = conn.cursor()
-        cursor.execute("UPDATE game_state SET is_active = 0")
+        cursor.execute("UPDATE game_state SET is_active = 0 WHERE group_id = ?", (group_id,))
         conn.commit()
         conn.close()
     except:
@@ -131,6 +147,108 @@ def add_correct_count(user_openid):
         conn.close()
     except:
         pass
+
+def add_stat(user_openid, field, amount=1):
+    """增加用户统计字段 (rob_count/robbed_count/fail_count)"""
+    if field not in ('rob_count', 'robbed_count', 'fail_count'):
+        return
+    try:
+        conn = sqlite3.connect(GAME_DB)
+        cursor = conn.cursor()
+        cursor.execute(
+            f"UPDATE scores SET {field} = {field} + ?, updated_at = ? WHERE user_openid = ?",
+            (amount, int(time.time()), user_openid)
+        )
+        if cursor.rowcount == 0:
+            cursor.execute(
+                f"INSERT INTO scores (user_openid, correct_count, {field}, updated_at) VALUES (?, 0, ?, ?)",
+                (user_openid, amount, int(time.time()))
+            )
+        conn.commit()
+        conn.close()
+    except:
+        pass
+
+def get_user_stats(user_openid):
+    """获取用户完整战绩"""
+    try:
+        conn = sqlite3.connect(GAME_DB)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT correct_count, rob_count, robbed_count, fail_count FROM scores WHERE user_openid = ?",
+            (user_openid,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return {
+                'correct_count': row[0] or 0,
+                'rob_count': row[1] or 0,
+                'robbed_count': row[2] or 0,
+                'fail_count': row[3] or 0,
+            }
+        return {'correct_count': 0, 'rob_count': 0, 'robbed_count': 0, 'fail_count': 0}
+    except:
+        return {'correct_count': 0, 'rob_count': 0, 'robbed_count': 0, 'fail_count': 0}
+
+def add_participant(game_id, user_openid):
+    """记录本轮参与抢答的用户"""
+    try:
+        conn = sqlite3.connect(GAME_DB)
+        cursor = conn.cursor()
+        cursor.execute("SELECT participants FROM game_state WHERE id = ?", (game_id,))
+        row = cursor.fetchone()
+        participants = json.loads(row[0]) if row and row[0] else []
+        if user_openid not in participants:
+            participants.append(user_openid)
+            cursor.execute(
+                "UPDATE game_state SET participants = ? WHERE id = ?",
+                (json.dumps(participants), game_id)
+            )
+            conn.commit()
+        conn.close()
+    except:
+        pass
+
+def get_participants(game_id):
+    """获取本轮参与抢答的用户列表"""
+    try:
+        conn = sqlite3.connect(GAME_DB)
+        cursor = conn.cursor()
+        cursor.execute("SELECT participants FROM game_state WHERE id = ?", (game_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return json.loads(row[0]) if row and row[0] else []
+    except:
+        return []
+
+def _get_bot(event):
+    """获取当前事件对应的 BotInstance"""
+    from core.application import get_app
+
+    app = get_app()
+    return app.get_bot(event.appid) if app else None
+
+def _mask_name(name):
+    """昵称脱敏：只显示第一个字和两个*"""
+    return f"{name[0]}**" if name else "匿名用户"
+
+async def get_display_name(event, user_openid):
+    """获取用户显示昵称：state=1 显示全部昵称，否则脱敏"""
+    try:
+        bot = _get_bot(event)
+        if bot:
+            row = await bot.log_service.db_fetch_one(
+                "SELECT name, state FROM users WHERE user_id = ?", (user_openid,)
+            )
+            if row:
+                name = row.get('name') or ''
+                state = row.get('state') or 0
+                if name:
+                    return name if state == 1 else _mask_name(name)
+    except Exception as e:
+        print(f"获取昵称失败: {e}")
+    return _mask_name('')
 
 def get_user_correct_count(user_openid):
     """获取用户答对次数"""
@@ -204,15 +322,15 @@ async def start_challenge(event, match):
     answer_text = answers[0] if answers else ""
     
     # 保存游戏状态
-    save_game_state(level, answers)
+    save_game_state(event.chat_id, level, answers)
     
     # 构建题目消息
     md = "🎯 挑战谐音梗\n\n"
     if level.get('url1'):
-        md += f"![{level.get('pun_word', '图片')} #700px #400px]({level['url1']})\n"
+        md += f"![{level.get('pun_word', '图片')} #200px #114px]({level['url1']})\n"
     md += f"这是 **{level.get('pun_word', '?')}**\n"
     if level.get('url2'):
-        md += f"![{level.get('punned_phrase', '图片')} #700px #400px]({level['url2']})\n"
+        md += f"![{level.get('punned_phrase', '图片')} #200px #114px]({level['url2']})\n"
     md += f"这是 {generate_placeholders(answer_text)}\n\n"
     
     category = level.get('category', '未知')
@@ -232,9 +350,10 @@ async def rob_answer(event, match):
     """抢答"""
     user_answer = match.group(1).strip()
     user_id = event.user_id
+    chat_id = event.chat_id
     
-    # 获取当前活跃游戏
-    game = get_active_game()
+    # 获取当前群的活跃游戏
+    game = get_active_game(chat_id)
     if not game:
         await event.reply("❌ 暂无题目，请先发送【谐音梗挑战】")
         return
@@ -242,7 +361,7 @@ async def rob_answer(event, match):
     # 检查是否超时
     elapsed = int(time.time()) - game['start_time']
     if elapsed > game['time_limit']:
-        close_game()
+        close_game(chat_id)
         await event.reply("⏰ 答题时间已到！")
         return
     
@@ -265,10 +384,16 @@ async def rob_answer(event, match):
     
     if is_correct:
         # 关闭当前题目
-        close_game()
+        close_game(chat_id)
         
-        # 记录答对次数
+        # 记录答对次数与抢答次数
         add_correct_count(user_id)
+        add_stat(user_id, 'rob_count')
+        
+        # 本轮其他参与者记为被抢答
+        for other in get_participants(game['id']):
+            if other != user_id:
+                add_stat(other, 'robbed_count')
         
         # 构建成功消息
         md = "![🎉 抢答成功 #500px #150px](https://download.nature.qq.com/SnsShare/qq/Image_1782052541886_94.jpg)\n\n"
@@ -289,14 +414,14 @@ async def rob_answer(event, match):
         if new_level:
             new_answers = get_answers(new_level)
             new_answer_text = new_answers[0] if new_answers else ""
-            save_game_state(new_level, new_answers)
+            save_game_state(chat_id, new_level, new_answers)
             
             new_md = "🎯 挑战谐音梗\n\n"
             if new_level.get('url1'):
-                new_md += f"![{new_level.get('pun_word', '图片')} #700px #400px]({new_level['url1']})\n"
+                new_md += f"![{new_level.get('pun_word', '图片')} #200px #114px]({new_level['url1']})\n"
             new_md += f"这是 **{new_level.get('pun_word', '?')}**\n"
             if new_level.get('url2'):
-                new_md += f"![{new_level.get('punned_phrase', '图片')} #700px #400px]({new_level['url2']})\n"
+                new_md += f"![{new_level.get('punned_phrase', '图片')} #200px #114px]({new_level['url2']})\n"
             new_md += f"这是 {generate_placeholders(new_answer_text)}\n"
             
             new_category = new_level.get('category', '未知')
@@ -311,15 +436,17 @@ async def rob_answer(event, match):
             ]
             await event.reply(new_md, buttons=new_buttons)
     else:
-        # 答错
+        # 答错：记录失败次数与本轮参与
+        add_stat(user_id, 'fail_count')
+        add_participant(game['id'], user_id)
         remaining = game['time_limit'] - elapsed
         
         err_md = "🎯 挑战谐音梗\n\n"
         if level.get('url1'):
-            err_md += f"![{level.get('pun_word', '图片')} #700px #400px]({level['url1']})\n\n"
+            err_md += f"![{level.get('pun_word', '图片')} #200px #114px]({level['url1']})\n\n"
         err_md += f"这是 **{level.get('pun_word', '?')}**\n\n"
         if level.get('url2'):
-            err_md += f"![{level.get('punned_phrase', '图片')} #700px #400px]({level['url2']})\n\n"
+            err_md += f"![{level.get('punned_phrase', '图片')} #200px #114px]({level['url2']})\n\n"
         
         answer_text = answers[0] if answers else ""
         err_md += f"这是 {generate_placeholders(answer_text)}\n\n"
@@ -339,7 +466,8 @@ async def rob_answer(event, match):
 @handler(r'^#查看答案$', name='查看答案', desc='查看谐音梗答案')
 async def view_answer(event, match):
     """查看答案"""
-    game = get_active_game()
+    chat_id = event.chat_id
+    game = get_active_game(chat_id)
     if not game:
         await event.reply("❌ 暂无题目")
         return
@@ -348,7 +476,7 @@ async def view_answer(event, match):
     answers_text = " / ".join(answers)
     
     # 关闭当前题目
-    close_game()
+    close_game(chat_id)
     
     md = "![📖 答案揭晓 #500px #200px](https://download.nature.qq.com/SnsShare/61616/Image_1782052581781_517.jpg)\n\n"
     md += "## 📖 答案揭晓\n\n"
@@ -363,14 +491,14 @@ async def view_answer(event, match):
     if new_level:
         new_answers = get_answers(new_level)
         new_answer_text = new_answers[0] if new_answers else ""
-        save_game_state(new_level, new_answers)
+        save_game_state(chat_id, new_level, new_answers)
         
         new_md = "🎯 挑战谐音梗\n\n"
         if new_level.get('url1'):
-            new_md += f"![{new_level.get('pun_word', '图片')} #700px #400px]({new_level['url1']})\n"
+            new_md += f"![{new_level.get('pun_word', '图片')} #200px #114px]({new_level['url1']})\n"
         new_md += f"这是 **{new_level.get('pun_word', '?')}**\n"
         if new_level.get('url2'):
-            new_md += f"![{new_level.get('punned_phrase', '图片')} #700px #400px]({new_level['url2']})\n"
+            new_md += f"![{new_level.get('punned_phrase', '图片')} #200px #114px]({new_level['url2']})\n"
         new_md += f"这是 {generate_placeholders(new_answer_text)}\n"
         
         new_category = new_level.get('category', '未知')
@@ -409,20 +537,33 @@ async def ranking(event, match):
 async def my_score(event, match):
     """我的战绩"""
     user_id = event.user_id
-    count = get_user_correct_count(user_id)
-    await event.reply(f"📊 <@{user_id}> 累计答对：**{count}题**\n\n继续加油，冲击排行榜！")
+    stats = get_user_stats(user_id)
+    name = await get_display_name(event, user_id)
+    md = f"📊 **{name}** 的游玩战绩\n\n"
+    md += f"> ✅ 累计答对：**{stats['correct_count']}题**\n"
+    md += f"> ⚡ 抢答次数：**{stats['rob_count']}次**\n"
+    md += f"> 💨 被抢答次数：**{stats['robbed_count']}次**\n"
+    md += f"> ❌ 失败次数：**{stats['fail_count']}次**\n\n"
+    md += "继续加油，冲击排行榜！"
+    await event.reply(md)
+
+@handler(r'^(我的)?游玩次数$', name='游玩次数', desc='查询我的游玩次数')
+async def my_play_stats(event, match):
+    """游玩次数"""
+    await my_score(event, match)
 
 @handler(r'^抢答$', name='抢答指令', desc='抢答指令')
 async def rob_command(event, match):
     """纯抢答指令"""
-    game = get_active_game()
+    chat_id = event.chat_id
+    game = get_active_game(chat_id)
     if not game:
         await event.reply("❌ 暂无题目，请先发送【谐音梗挑战】")
         return
     
     elapsed = int(time.time()) - game['start_time']
     if elapsed > game['time_limit']:
-        close_game()
+        close_game(chat_id)
         await event.reply("⏰ 答题时间已到！")
         return
     
@@ -431,9 +572,10 @@ async def rob_command(event, match):
 @handler(r'^结束挑战$', name='结束挑战', desc='结束当前挑战')
 async def end_challenge(event, match):
     """结束当前题目"""
-    game = get_active_game()
+    chat_id = event.chat_id
+    game = get_active_game(chat_id)
     if game:
-        close_game()
+        close_game(chat_id)
         await event.reply("✅ 当前题目已结束")
         return
     await event.reply("❌ 当前没有活跃的题目")
