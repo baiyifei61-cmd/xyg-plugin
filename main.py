@@ -38,6 +38,7 @@ def init_db():
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS game_state (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id TEXT,
             level_id INTEGER,
             answers TEXT,
             start_time INTEGER,
@@ -45,6 +46,10 @@ def init_db():
             is_active INTEGER DEFAULT 1
         )
     """)
+    cursor.execute("PRAGMA table_info(game_state)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if 'group_id' not in columns:
+        cursor.execute("ALTER TABLE game_state ADD COLUMN group_id TEXT")
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS scores (
             user_openid TEXT PRIMARY KEY,
@@ -71,13 +76,16 @@ def get_random_level():
         print(f"获取题目失败: {e}")
         return None
 
-def get_active_game():
-    """获取当前活跃的游戏"""
+def get_active_game(group_id):
+    """获取当前群的活跃游戏"""
     try:
         conn = sqlite3.connect(GAME_DB)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("SELECT * FROM game_state WHERE is_active = 1 ORDER BY id DESC LIMIT 1")
+        cursor.execute(
+            "SELECT * FROM game_state WHERE is_active = 1 AND group_id = ? ORDER BY id DESC LIMIT 1",
+            (group_id,)
+        )
         row = cursor.fetchone()
         conn.close()
         if row:
@@ -86,28 +94,28 @@ def get_active_game():
     except:
         return None
 
-def save_game_state(level, answers):
-    """保存游戏状态"""
+def save_game_state(group_id, level, answers):
+    """保存游戏状态（按群独立）"""
     try:
         conn = sqlite3.connect(GAME_DB)
         cursor = conn.cursor()
-        cursor.execute("UPDATE game_state SET is_active = 0")
+        cursor.execute("UPDATE game_state SET is_active = 0 WHERE group_id = ?", (group_id,))
         answers_json = json.dumps(answers, ensure_ascii=False)
         cursor.execute(
-            "INSERT INTO game_state (level_id, answers, start_time, time_limit, is_active) VALUES (?, ?, ?, ?, 1)",
-            (level['id'], answers_json, int(time.time()), 100)
+            "INSERT INTO game_state (group_id, level_id, answers, start_time, time_limit, is_active) VALUES (?, ?, ?, ?, ?, 1)",
+            (group_id, level['id'], answers_json, int(time.time()), 100)
         )
         conn.commit()
         conn.close()
     except Exception as e:
         print(f"保存游戏失败: {e}")
 
-def close_game():
-    """关闭当前游戏"""
+def close_game(group_id):
+    """关闭当前群的游戏"""
     try:
         conn = sqlite3.connect(GAME_DB)
         cursor = conn.cursor()
-        cursor.execute("UPDATE game_state SET is_active = 0")
+        cursor.execute("UPDATE game_state SET is_active = 0 WHERE group_id = ?", (group_id,))
         conn.commit()
         conn.close()
     except:
@@ -204,7 +212,7 @@ async def start_challenge(event, match):
     answer_text = answers[0] if answers else ""
     
     # 保存游戏状态
-    save_game_state(level, answers)
+    save_game_state(event.chat_id, level, answers)
     
     # 构建题目消息
     md = "🎯 挑战谐音梗\n\n"
@@ -232,9 +240,10 @@ async def rob_answer(event, match):
     """抢答"""
     user_answer = match.group(1).strip()
     user_id = event.user_id
+    chat_id = event.chat_id
     
-    # 获取当前活跃游戏
-    game = get_active_game()
+    # 获取当前群的活跃游戏
+    game = get_active_game(chat_id)
     if not game:
         await event.reply("❌ 暂无题目，请先发送【谐音梗挑战】")
         return
@@ -242,7 +251,7 @@ async def rob_answer(event, match):
     # 检查是否超时
     elapsed = int(time.time()) - game['start_time']
     if elapsed > game['time_limit']:
-        close_game()
+        close_game(chat_id)
         await event.reply("⏰ 答题时间已到！")
         return
     
@@ -265,7 +274,7 @@ async def rob_answer(event, match):
     
     if is_correct:
         # 关闭当前题目
-        close_game()
+        close_game(chat_id)
         
         # 记录答对次数
         add_correct_count(user_id)
@@ -289,7 +298,7 @@ async def rob_answer(event, match):
         if new_level:
             new_answers = get_answers(new_level)
             new_answer_text = new_answers[0] if new_answers else ""
-            save_game_state(new_level, new_answers)
+            save_game_state(chat_id, new_level, new_answers)
             
             new_md = "🎯 挑战谐音梗\n\n"
             if new_level.get('url1'):
@@ -339,7 +348,8 @@ async def rob_answer(event, match):
 @handler(r'^#查看答案$', name='查看答案', desc='查看谐音梗答案')
 async def view_answer(event, match):
     """查看答案"""
-    game = get_active_game()
+    chat_id = event.chat_id
+    game = get_active_game(chat_id)
     if not game:
         await event.reply("❌ 暂无题目")
         return
@@ -348,7 +358,7 @@ async def view_answer(event, match):
     answers_text = " / ".join(answers)
     
     # 关闭当前题目
-    close_game()
+    close_game(chat_id)
     
     md = "![📖 答案揭晓 #500px #200px](https://download.nature.qq.com/SnsShare/61616/Image_1782052581781_517.jpg)\n\n"
     md += "## 📖 答案揭晓\n\n"
@@ -363,7 +373,7 @@ async def view_answer(event, match):
     if new_level:
         new_answers = get_answers(new_level)
         new_answer_text = new_answers[0] if new_answers else ""
-        save_game_state(new_level, new_answers)
+        save_game_state(chat_id, new_level, new_answers)
         
         new_md = "🎯 挑战谐音梗\n\n"
         if new_level.get('url1'):
@@ -415,14 +425,15 @@ async def my_score(event, match):
 @handler(r'^抢答$', name='抢答指令', desc='抢答指令')
 async def rob_command(event, match):
     """纯抢答指令"""
-    game = get_active_game()
+    chat_id = event.chat_id
+    game = get_active_game(chat_id)
     if not game:
         await event.reply("❌ 暂无题目，请先发送【谐音梗挑战】")
         return
     
     elapsed = int(time.time()) - game['start_time']
     if elapsed > game['time_limit']:
-        close_game()
+        close_game(chat_id)
         await event.reply("⏰ 答题时间已到！")
         return
     
@@ -431,9 +442,10 @@ async def rob_command(event, match):
 @handler(r'^结束挑战$', name='结束挑战', desc='结束当前挑战')
 async def end_challenge(event, match):
     """结束当前题目"""
-    game = get_active_game()
+    chat_id = event.chat_id
+    game = get_active_game(chat_id)
     if game:
-        close_game()
+        close_game(chat_id)
         await event.reply("✅ 当前题目已结束")
         return
     await event.reply("❌ 当前没有活跃的题目")
