@@ -217,10 +217,10 @@ async def start_challenge(event, match):
     # 构建题目消息
     md = "🎯 挑战谐音梗\n\n"
     if level.get('url1'):
-        md += f"![{level.get('pun_word', '图片')} #700px #400px]({level['url1']})\n"
+        md += f"![{level.get('pun_word', '图片')} #200px #114px]({level['url1']})\n"
     md += f"这是 **{level.get('pun_word', '?')}**\n"
     if level.get('url2'):
-        md += f"![{level.get('punned_phrase', '图片')} #700px #400px]({level['url2']})\n"
+        md += f"![{level.get('punned_phrase', '图片')} #200px #114px]({level['url2']})\n"
     md += f"这是 {generate_placeholders(answer_text)}\n\n"
     
     category = level.get('category', '未知')
@@ -302,10 +302,10 @@ async def rob_answer(event, match):
             
             new_md = "🎯 挑战谐音梗\n\n"
             if new_level.get('url1'):
-                new_md += f"![{new_level.get('pun_word', '图片')} #700px #400px]({new_level['url1']})\n"
+                new_md += f"![{new_level.get('pun_word', '图片')} #200px #114px]({new_level['url1']})\n"
             new_md += f"这是 **{new_level.get('pun_word', '?')}**\n"
             if new_level.get('url2'):
-                new_md += f"![{new_level.get('punned_phrase', '图片')} #700px #400px]({new_level['url2']})\n"
+                new_md += f"![{new_level.get('punned_phrase', '图片')} #200px #114px]({new_level['url2']})\n"
             new_md += f"这是 {generate_placeholders(new_answer_text)}\n"
             
             new_category = new_level.get('category', '未知')
@@ -325,10 +325,10 @@ async def rob_answer(event, match):
         
         err_md = "🎯 挑战谐音梗\n\n"
         if level.get('url1'):
-            err_md += f"![{level.get('pun_word', '图片')} #700px #400px]({level['url1']})\n\n"
+            err_md += f"![{level.get('pun_word', '图片')} #200px #114px]({level['url1']})\n\n"
         err_md += f"这是 **{level.get('pun_word', '?')}**\n\n"
         if level.get('url2'):
-            err_md += f"![{level.get('punned_phrase', '图片')} #700px #400px]({level['url2']})\n\n"
+            err_md += f"![{level.get('punned_phrase', '图片')} #200px #114px]({level['url2']})\n\n"
         
         answer_text = answers[0] if answers else ""
         err_md += f"这是 {generate_placeholders(answer_text)}\n\n"
@@ -377,10 +377,10 @@ async def view_answer(event, match):
         
         new_md = "🎯 挑战谐音梗\n\n"
         if new_level.get('url1'):
-            new_md += f"![{new_level.get('pun_word', '图片')} #700px #400px]({new_level['url1']})\n"
+            new_md += f"![{new_level.get('pun_word', '图片')} #200px #114px]({new_level['url1']})\n"
         new_md += f"这是 **{new_level.get('pun_word', '?')}**\n"
         if new_level.get('url2'):
-            new_md += f"![{new_level.get('punned_phrase', '图片')} #700px #400px]({new_level['url2']})\n"
+            new_md += f"![{new_level.get('punned_phrase', '图片')} #200px #114px]({new_level['url2']})\n"
         new_md += f"这是 {generate_placeholders(new_answer_text)}\n"
         
         new_category = new_level.get('category', '未知')
